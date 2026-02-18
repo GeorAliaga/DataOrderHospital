@@ -56,6 +56,10 @@ class App(QWidget):
         self.chk_report.setChecked(True)
         layout.addWidget(self.chk_report)
 
+        self.chk_sort = QCheckBox("Ordenar por fecha/turno/código (recomendado)")
+        self.chk_sort.setChecked(True)
+        layout.addWidget(self.chk_sort)
+
         btn_run = QPushButton("PROCESAR")
         btn_run.clicked.connect(self.run)
         layout.addWidget(btn_run)
@@ -116,6 +120,7 @@ class App(QWidget):
                 out_xlsx=self.out_path,
                 include_audit_sheet=self.chk_audit.isChecked(),
                 write_report_txt=self.chk_report.isChecked(),
+                sort_output=self.chk_sort.isChecked(),
             )
             extra = ""
             if self.chk_report.isChecked():

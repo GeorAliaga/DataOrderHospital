@@ -2,6 +2,7 @@ import os
 import re
 import unicodedata
 import hashlib
+from difflib import SequenceMatcher
 from typing import List, Tuple, Optional
 
 import numpy as np
@@ -40,10 +41,39 @@ def normalize_dni(val):
     return np.nan
 
 
+def _robust_datetime_from_any(series: pd.Series) -> pd.Series:
+    """
+    Parse dates robustly from:
+    - Excel serial numbers (days since 1899-12-30)
+    - strings (dd/mm/yyyy, yyyy-mm-dd, etc.)
+    - datetime objects
+    Returns datetime64[ns] with NaT for invalid.
+    """
+    s = series.copy()
+
+    # Numeric -> try Excel serial conversion if looks like a serial date
+    num = pd.to_numeric(s, errors="coerce")
+    mask_serial = num.notna() & (num.between(20000, 60000))  # ~1954..2064
+    dt = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+
+    if mask_serial.any():
+        dt.loc[mask_serial] = pd.to_datetime(num.loc[mask_serial], unit="D", origin="1899-12-30", errors="coerce")
+
+    # Non-serial -> normal parse (dayfirst)
+    mask_other = ~mask_serial
+    if mask_other.any():
+        dt.loc[mask_other] = pd.to_datetime(s.loc[mask_other], errors="coerce", dayfirst=True)
+
+    # Remove typical artifacts
+    dt = dt.mask(dt.dt.year == 1970)
+
+    return dt
+
+
 def standardize_date(series: pd.Series) -> pd.Series:
     """
     Normaliza a dd/mm/yyyy.
-    - Soporta datetime, seriales, strings ISO.
+    - Soporta datetime, seriales de Excel y strings.
     - Si el valor era solo hora (ej. '08:30'), lo deja en NaN.
     - Si cae en 01/01/1970 (artefacto típico), lo deja en NaN.
     """
@@ -52,12 +82,11 @@ def standardize_date(series: pd.Series) -> pd.Series:
     # time-only string -> NaN
     time_only = s.astype(str).str.match(r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*$", na=False)
 
-    dtp = pd.to_datetime(s, errors="coerce", dayfirst=True)
-    dtp = dtp.mask(time_only)
-    dtp = dtp.mask(dtp.dt.year == 1970)
+    dt = _robust_datetime_from_any(s)
+    dt = dt.mask(time_only)
 
-    out = dtp.dt.strftime("%d/%m/%Y")
-    out = out.where(~dtp.isna(), np.nan)
+    out = dt.dt.strftime("%d/%m/%Y")
+    out = out.where(~dt.isna(), np.nan)
     return out
 
 
@@ -99,10 +128,55 @@ def detect_header_row_fallback_openpyxl(ws, max_rows=80) -> Optional[int]:
     for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=max_rows, values_only=True), start=0):
         vals = [_norm_txt(v) for v in row]
         joined = " ".join(vals)
-        score = sum(1 for t in ("TURNO","CODIGO","CATEGORIA","DNI","PROCEDIMIENTO","DIAGNOSTICO","FECHA","UBIGEO") if t in joined)
+        score = sum(
+            1 for t in ("TURNO","CODIGO","CATEGORIA","DNI","PROCEDIMIENTO","DIAGNOSTICO","FECHA","UBIGEO")
+            if t in joined
+        )
         if score > best_score:
             best_score, best_row = score, r_idx
     return None if best_score < 2 else best_row
+def map_columns_to_template(df_cols: List[str], template_cols: List[str], fuzzy_threshold: float = 0.86) -> dict:
+    """
+    Mapea columnas del DF al nombre exacto de columna de la plantilla:
+    - match exacto normalizado
+    - fuzzy match (no Unnamed)
+    """
+    tpl_norm = {c: _norm_txt(c) for c in template_cols}
+    mapping, used = {}, set()
+
+    # exact
+    for c in df_cols:
+        nc = _norm_txt(c)
+        for t, nt in tpl_norm.items():
+            if nt and nt == nc and t not in used:
+                mapping[c] = t
+                used.add(t)
+                break
+
+    # fuzzy
+    for c in df_cols:
+        if c in mapping:
+            continue
+        nc = _norm_txt(c)
+        if not nc or nc.startswith("UNNAMED"):
+            continue
+
+        best, best_score = None, 0.0
+        for t in template_cols:
+            if t in used:
+                continue
+            nt = tpl_norm[t]
+            if not nt or nt.startswith("UNNAMED"):
+                continue
+            score = SequenceMatcher(None, nc, nt).ratio()
+            if score > best_score:
+                best_score, best = score, t
+
+        if best is not None and best_score >= fuzzy_threshold:
+            mapping[c] = best
+            used.add(best)
+
+    return mapping
 
 
 # ============================================================
@@ -237,6 +311,16 @@ def enrich_with_dbs(df: pd.DataFrame, pac_lookup, per_lookup) -> pd.DataFrame:
 # Duplicados entre hojas del mismo archivo (rápido)
 # ============================================================
 
+
+def _decat_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert any categorical columns to plain object to avoid sort errors."""
+    for c in df.columns:
+        try:
+            if pd.api.types.is_categorical_dtype(df[c]):
+                df[c] = df[c].astype("object")
+        except Exception:
+            pass
+    return df
 def quick_fingerprint(df: pd.DataFrame, key_cols: List[str], sample_each=120) -> str:
     """
     Huella rápida: hash de tuplas (primeras/últimas filas) en columnas clave.
@@ -255,7 +339,7 @@ def quick_fingerprint(df: pd.DataFrame, key_cols: List[str], sample_each=120) ->
     tail = sub.tail(sample_each)
     mix = pd.concat([head, tail], ignore_index=True)
 
-    joined = "\n".join("|".join(row) for row in mix.itertuples(index=False, name=None))
+    joined = "\n".join("|".join(map(str, row)) for row in mix.itertuples(index=False, name=None))
     return hashlib.md5(joined.encode("utf-8")).hexdigest()
 
 
@@ -293,12 +377,12 @@ def _write_df(ws, df: pd.DataFrame, start_row=3):
 # Procesamiento por grupo (MED y ENF por separado)
 # ============================================================
 
-def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_lookup, report: List[str], group_name: str) -> pd.DataFrame:
+def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_lookup, report: List[str], group_name: str, sort_output: bool) -> pd.DataFrame:
     parts = []
 
     for path in paths:
         try:
-            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True, keep_links=False)
         except Exception as e:
             report.append(f"[{group_name}] [ERR] {os.path.basename(path)} | No se pudo abrir: {type(e).__name__}")
             continue
@@ -332,6 +416,11 @@ def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_l
                 report.append(f"[{group_name}] [ERR] {os.path.basename(path)} :: {sh} | ReadError {type(e).__name__}")
                 continue
 
+            # Mapear columnas al esquema de la plantilla (reduce vacíos)
+            mapping = map_columns_to_template(list(df.columns), template_cols)
+            if mapping:
+                df = df.rename(columns=mapping)
+
             in_rows = len(df)
             df = drop_garbage_rows(df)
 
@@ -364,6 +453,7 @@ def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_l
         return pd.DataFrame(columns=template_cols)
 
     out = pd.concat(parts, ignore_index=True)
+    out = _decat_df(out)
 
     # quitar duplicados entre archivos por una clave razonable (sin perder información útil)
     dedup_cols = [c for c in ["Unnamed: 0","TURNO","CODIGO","DNI DEL PACIENTE","PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in out.columns]
@@ -371,17 +461,28 @@ def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_l
         out = out.drop_duplicates(subset=dedup_cols, keep="first")
 
     # ordenar (para que no salga “mezclado”)
-    if "Unnamed: 0" in out.columns:
-        dtp = pd.to_datetime(out["Unnamed: 0"], errors="coerce", dayfirst=True)
+    if sort_output and "Unnamed: 0" in out.columns:
+        dtp = _robust_datetime_from_any(out["Unnamed: 0"])
         out["_sort_date"] = dtp
+
         if "TURNO" in out.columns:
             out["_sort_turno"] = out["TURNO"].map({"M": 0, "T": 1})
         else:
-            out["_sort_turno"] = 9
-        if "CODIGO" not in out.columns:
-            out["CODIGO"] = np.nan
-        out = out.sort_values(by=["_sort_date","_sort_turno","CODIGO"], ascending=[True, True, True], na_position="last")
-        out = out.drop(columns=["_sort_date","_sort_turno"])
+            out["_sort_turno"] = np.nan
+
+        if "CODIGO" in out.columns:
+            out["_sort_codigo"] = pd.to_numeric(out["CODIGO"], errors="coerce")
+        else:
+            out["_sort_codigo"] = np.nan
+
+        # Orden estable
+        out = out.sort_values(
+            by=["_sort_date", "_sort_turno", "_sort_codigo"],
+            ascending=[True, True, True],
+            na_position="last",
+            kind="mergesort",
+        )
+        out = out.drop(columns=["_sort_date", "_sort_turno", "_sort_codigo"])
 
     return out
 
@@ -399,6 +500,7 @@ def consolidate(
     out_xlsx: str,
     include_audit_sheet: bool = False,
     write_report_txt: bool = True,
+    sort_output: bool = True,
 ):
     """
     - PROC. MED. se llena SOLO con proc_med_files
@@ -416,15 +518,15 @@ def consolidate(
     report: List[str] = []
     report.append("=== CONSOLIDADOR HOSPITAL - REPORTE (v4) ===")
 
-    med_df = _process_group(proc_med_files or [], tpl_med_cols, pac_lookup, per_lookup, report, "MED")
-    enf_df = _process_group(proc_enf_files or [], tpl_enf_cols, pac_lookup, per_lookup, report, "ENF")
+    med_df = _process_group(proc_med_files or [], tpl_med_cols, pac_lookup, per_lookup, report, "MED", sort_output)
+    enf_df = _process_group(proc_enf_files or [], tpl_enf_cols, pac_lookup, per_lookup, report, "ENF", sort_output)
 
     report.append("")
     report.append(f"PROC. MED. filas: {len(med_df)}")
     report.append(f"PROC. ENF. filas: {len(enf_df)}")
 
     # Escribir dentro de la plantilla para conservar TODO el formato
-    wb = openpyxl.load_workbook(plantilla_xlsx)
+    wb = openpyxl.load_workbook(plantilla_xlsx, keep_links=False)
     ws_med = wb["PROC. MED."]
     ws_enf = wb["PROC. ENF"]
 
@@ -451,4 +553,4 @@ def consolidate(
         base, _ = os.path.splitext(out_xlsx)
         report_path = base + "_REPORTE.txt"
         with open(report_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(report))
+            f.write("\n".join(map(str, report)))

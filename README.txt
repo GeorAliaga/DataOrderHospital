@@ -19,3 +19,12 @@ Qué arregla v4 (importante para PROC ENF):
 
 Si algo importante queda en SKIP:
 - Esa hoja probablemente no tiene TURNO+CODIGO (no es formato plantilla) y requiere un parser dedicado.
+
+
+v4.3: Arregla crash de sort (categorical/unordered) convirtiendo fechas a datetime robusto y ordenando por claves numéricas.
+
+
+v4.3.3: Arregla carga lenta de excels con links externos (keep_links=False).
+
+
+v4.3.4: Agrega opción para desactivar el ordenado (por si algún Excel trae fechas totalmente incompatibles).
