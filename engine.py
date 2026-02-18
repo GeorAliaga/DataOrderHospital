@@ -70,6 +70,117 @@ def _robust_datetime_from_any(series: pd.Series) -> pd.Series:
     return dt
 
 
+def _parse_dates_two_modes(series: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Devuelve (dt_dayfirst, dt_monthfirst, time_only_mask).
+    - Números: se interpretan como serial de Excel si caen en rango razonable.
+    - Strings: se parsean en ambos modos.
+    """
+    s = series.copy()
+
+    # time-only string -> NaT
+    time_only = s.astype(str).str.match(r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*$", na=False)
+
+    num = pd.to_numeric(s, errors="coerce")
+    mask_serial = num.notna() & (num.between(20000, 60000))  # ~1954..2064
+
+    dt1 = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    dt2 = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+
+    if mask_serial.any():
+        dt_serial = pd.to_datetime(num.loc[mask_serial], unit="D", origin="1899-12-30", errors="coerce")
+        dt1.loc[mask_serial] = dt_serial
+        dt2.loc[mask_serial] = dt_serial
+
+    mask_other = ~mask_serial
+    if mask_other.any():
+        dt1.loc[mask_other] = pd.to_datetime(s.loc[mask_other], errors="coerce", dayfirst=True)
+        dt2.loc[mask_other] = pd.to_datetime(s.loc[mask_other], errors="coerce", dayfirst=False)
+
+    # clean artifacts
+    dt1 = dt1.mask(time_only).mask(dt1.dt.year == 1970)
+    dt2 = dt2.mask(time_only).mask(dt2.dt.year == 1970)
+
+    return dt1, dt2, time_only
+
+
+def standardize_date_contextual(series: pd.Series, report: list[str], context_label: str) -> pd.Series:
+    """
+    Normaliza fechas a dd/mm/yyyy, eligiendo entre dayfirst=True o False para valores ambiguos
+    basado en continuidad (mes dominante / mediana).
+    No hardcodea año ni mes; aprende del propio archivo/hoja.
+
+    Registra en reporte cuántos swaps hizo.
+    """
+    dt1, dt2, _ = _parse_dates_two_modes(series)
+
+    # Ambiguo: ambos válidos y diferentes
+    amb = dt1.notna() & dt2.notna() & (dt1 != dt2)
+
+    # Fechas "no ambiguas": dt2 NaT o iguales
+    stable = dt1.notna() & (~amb)
+
+    # Contexto: mes dominante y mediana
+    ctx_src = dt1[stable]
+    if len(ctx_src) < 25:
+        ctx_src = dt1[dt1.notna()]
+
+    if len(ctx_src) == 0:
+        chosen = dt1
+        return chosen.dt.strftime("%d/%m/%Y").where(chosen.notna(), np.nan)
+
+    # mes dominante
+    ym = ctx_src.dt.to_period("M").astype(str)
+    dom = ym.value_counts().idxmax()  # 'YYYY-MM'
+    dom_year, dom_month = map(int, dom.split("-"))
+
+    median = ctx_src.median()
+    # ventana de continuidad: +/- 60 días alrededor de la mediana
+    lo = median - pd.Timedelta(days=60)
+    hi = median + pd.Timedelta(days=60)
+
+    chosen = dt1.copy()
+    swaps = 0
+    kept_amb = 0
+
+    if amb.any():
+        d1 = dt1[amb]
+        d2 = dt2[amb]
+
+        # condiciones de "tiene sentido"
+        in_dom_1 = (d1.dt.year == dom_year) & (d1.dt.month == dom_month)
+        in_dom_2 = (d2.dt.year == dom_year) & (d2.dt.month == dom_month)
+
+        in_win_1 = (d1 >= lo) & (d1 <= hi)
+        in_win_2 = (d2 >= lo) & (d2 <= hi)
+
+        # regla:
+        # 1) si solo uno cae en mes dominante -> elegir ese
+        pick2 = (in_dom_2 & ~in_dom_1)
+        pick1 = (in_dom_1 & ~in_dom_2)
+
+        # 2) si ninguno/ambos en dom, usar ventana de continuidad
+        pick2 |= (~pick1 & ~pick2 & in_win_2 & ~in_win_1)
+
+        # 3) si ambos en ventana o ambos fuera, elegir el más cercano a la mediana
+        tie = ~pick1 & ~pick2
+        if tie.any():
+            dist1 = (d1[tie] - median).abs()
+            dist2 = (d2[tie] - median).abs()
+            pick2_tie = dist2 < dist1
+            idx2 = pick2_tie[pick2_tie].index
+            pick2.loc[idx2] = True
+
+        idx2 = pick2[pick2].index
+        chosen.loc[idx2] = dt2.loc[idx2]
+        swaps = len(idx2)
+        kept_amb = int(amb.sum() - swaps)
+
+    if swaps:
+        report.append(f"[DATE] {context_label} | swaps_ambiguous={swaps} kept_ambiguous={kept_amb} | dom={dom_year:04d}-{dom_month:02d} median={median.date()}")
+    return chosen.dt.strftime("%d/%m/%Y").where(chosen.notna(), np.nan)
+
+
 def standardize_date(series: pd.Series) -> pd.Series:
     """
     Normaliza a dd/mm/yyyy.
@@ -92,14 +203,50 @@ def standardize_date(series: pd.Series) -> pd.Series:
 
 def enforce_turno(series: pd.Series) -> pd.Series:
     """
-    En la plantilla, TURNO debería ser M o T.
-    Si viene 'MAÑANA/MANANA' -> M, 'TARDE' -> T.
-    Otros valores (L-M-V, M-J-S, GN, GD, etc.) se dejan en blanco.
+    Normaliza TURNO a M/T/N:
+    - MAÑANA/MANANA/M -> M
+    - TARDE/T -> T
+    - NOCHE/N -> N
+    - DIA/D -> T (según tu regla)
+    - valores tipo "L-M-V", "M-J-S", etc -> NaN
     """
-    s = series.astype(str).str.strip().str.upper()
-    s = s.replace({"MAÑANA": "M", "MANANA": "M", "TARDE": "T"})
-    s = s.where(s.isin(["M", "T"]), np.nan)
+    s = series.astype("object").astype(str).str.strip().str.upper()
+
+    # horarios/semanas (no son turnos)
+    bad = s.str.contains(r"^[LMDJVSD\-\/ ]{3,}$", regex=True, na=False)
+    s = s.mask(bad)
+
+    # normalizaciones comunes
+    s = s.replace({
+        "MAÑANA": "M", "MANANA": "M", "MANAÑA": "M",
+        "TARDE": "T",
+        "NOCHE": "N",
+        "DIA": "T", "D": "T",
+        "N": "N", "M": "M", "T": "T",
+    })
+
+    # si viene algo como "MT" o "TM" o "MN" etc -> indefinido, dejar vacío
+    s = s.where(s.isin(["M", "T", "N"]), np.nan)
     return s
+
+
+def split_by_categoria(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Separa registros por CATEGORIA DEL PERSONAL DE SALUD:
+    - MED: 1-4
+    - ENF: 5-7
+    - UNK: otros o NaN
+    """
+    col = "CATEGORIA DEL PERSONAL DE SALUD"
+    if col not in df.columns:
+        empty = df.iloc[0:0].copy()
+        return empty, empty, df.copy()
+
+    cat = pd.to_numeric(df[col], errors="coerce")
+    med = df[cat.isin([1,2,3,4])].copy()
+    enf = df[cat.isin([5,6,7])].copy()
+    unk = df[~cat.isin([1,2,3,4,5,6,7])].copy()
+    return med, enf, unk
 
 
 # ============================================================
@@ -179,6 +326,53 @@ def map_columns_to_template(df_cols: List[str], template_cols: List[str], fuzzy_
     return mapping
 
 
+
+
+def clean_cpt(series: pd.Series) -> pd.Series:
+    """
+    Limpia CPT:
+    - quita decimales (99199.11 -> 99199)
+    - deja solo dígitos
+    """
+    s = series.astype("object")
+    s2 = s.astype(str).str.strip()
+    s2 = s2.str.replace(r"\.0$", "", regex=True)
+    s2 = s2.str.replace(",", ".", regex=False)
+    s2 = s2.str.extract(r"(\d+)", expand=False)
+    # algunos vienen con más de 5 dígitos, no recortamos agresivo; solo quita basura
+    s2 = s2.where(s2.notna() & (s2.str.len() >= 3), np.nan)
+    return s2
+
+
+def clean_cie10(series: pd.Series) -> pd.Series:
+    """
+    Limpia CIE10:
+    - K07,2 -> K07.2
+    - R.10 -> R10
+    - J00.X -> J00
+    Mantiene formato general: Letra + 2 dígitos + opcional . + 1-4 alfanum.
+    """
+    s = series.astype("object").astype(str).str.strip().str.upper()
+    s = s.replace({"NAN": ""})
+    s = s.str.replace(",", ".", regex=False)
+    s = s.str.replace(r"\s+", "", regex=True)
+    # "R.10" -> "R10"
+    s = s.str.replace(r"^([A-Z])\.(\d{2})", r"\1\2", regex=True)
+
+    # extraer forma canonical
+    m = s.str.extract(r"^([A-Z]\d{2})(?:\.?([A-Z0-9]{1,4}))?", expand=True)
+    base = m[0]
+    ext = m[1]
+
+    out = base.copy()
+    out = out.where(base.notna(), np.nan)
+
+    # si ext es 'X' o termina en X, suele ser placeholder -> dejar solo base
+    ext2 = ext.where(ext.notna(), "")
+    ext2 = ext2.where(~ext2.str.fullmatch(r"X+"), "")
+
+    out = out.where(ext2.eq(""), base + "." + ext2)
+    return out.where(out.notna() & (out.astype(str).str.len() >= 3), np.nan)
 # ============================================================
 # Limpieza / reparación de columnas
 # ============================================================
@@ -199,6 +393,77 @@ def drop_garbage_rows(df: pd.DataFrame) -> pd.DataFrame:
         df = df[~df[key_candidates].isna().all(axis=1)].copy()
 
     return df
+
+
+
+
+
+def fill_unidad_origen_from_unnamed(df: pd.DataFrame, template_cols: List[str]) -> pd.DataFrame:
+    """
+    Si UNIDAD DE ORIGEN está vacía pero existe otra columna (a menudo Unnamed:xx)
+    con valores tipo "EMERGENCIA", "CONSULTA EXTERNA", "CENTRO QUIRURGICO", etc.,
+    la copia.
+    """
+    df = df.copy()
+    target = "UNIDAD DE ORIGEN"
+    if target not in template_cols:
+        return df
+
+    if target not in df.columns:
+        df[target] = pd.Series([np.nan]*len(df), index=df.index, dtype="object")
+    else:
+        df[target] = df[target].astype("object")
+
+    non_null_ratio = df[target].notna().mean() if len(df) else 0.0
+    if non_null_ratio > 0.15:
+        return df  # ya tiene suficiente
+
+    keywords = ["EMERGENCIA","CONSULTA","CENTRO","QUIRURG","HOSPITAL","DPTO","SERVICIO","TRIAJE","HEMODIAL","ESTOMAT","UCI","URGEN"]
+    best_col, best_score = None, 0.0
+
+    # candidates: unnamed, no-template, o columnas típicamente mal corridas
+    extra_candidates = {"ESPECIALIDAD DE MEDICO TRATANTE"}
+
+    for c in df.columns:
+        if c == target:
+            continue
+        if not (str(c).startswith("Unnamed") or c not in template_cols or c in extra_candidates):
+            continue
+        s = df[c]
+        if s.isna().all():
+            continue
+        sample = s.dropna().astype(str).str.upper().head(600)
+        if len(sample) < 10:
+            continue
+        # score por MAX keyword ratio (más robusto que promedio)
+        ratios = [sample.str.contains(k, na=False).mean() for k in keywords]
+        score = max(ratios) if ratios else 0.0
+        if score > best_score:
+            best_score, best_col = score, c
+
+    if best_col is not None and best_score >= 0.06:
+        miss = df[target].isna() | (df[target].astype(str).str.strip() == "")
+        df.loc[miss, target] = df.loc[miss, best_col].astype("object").astype(str).str.strip()
+        # limpiar 'nan'
+        df[target] = df[target].replace({"nan": np.nan, "NAN": np.nan})
+
+    return df
+
+
+def forward_fill_blocks(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """
+    Muchos excels vienen con celdas fusionadas: el primer registro tiene FECHA/CODIGO/TURNO y
+    el resto de filas del bloque vienen en blanco. Esto rellena hacia abajo solo en columnas clave.
+    """
+    df = df.copy()
+    for c in cols:
+        if c in df.columns:
+            # asegurar dtype flexible para que ffill no choque (ej. todo NaN -> float64)
+            df[c] = df[c].astype("object")
+            s = df[c].replace("", np.nan)
+            df[c] = s.ffill()
+    return df
+
 
 
 def numeric_ratio(series: pd.Series, sample=400) -> float:
@@ -377,8 +642,49 @@ def _write_df(ws, df: pd.DataFrame, start_row=3):
 # Procesamiento por grupo (MED y ENF por separado)
 # ============================================================
 
-def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_lookup, report: List[str], group_name: str, sort_output: bool) -> pd.DataFrame:
-    parts = []
+def _drop_obvious_empty_records(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filtro NO agresivo: elimina solo filas totalmente vacías/obvias.
+    Evita perder registros cuando CPT/DIAG vienen en columnas alternativas.
+    """
+    df = df.copy()
+    keys = [c for c in ["Unnamed: 0","TURNO","CODIGO","DNI DEL PACIENTE","PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in df.columns]
+    if not keys:
+        return df
+    all_empty = df[keys].isna().all(axis=1)
+    df = df.loc[~all_empty].copy()
+
+    # además: si TURNO es NaN y no hay identificadores ni procedimientos, es basura
+    id_cols = [c for c in ["CODIGO","DNI DEL PACIENTE"] if c in df.columns]
+    clin_cols = [c for c in ["PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in df.columns]
+    if "TURNO" in df.columns and id_cols and clin_cols:
+        bad = df["TURNO"].isna() & df[id_cols].isna().all(axis=1) & df[clin_cols].isna().all(axis=1)
+        df = df.loc[~bad].copy()
+
+    return df
+
+
+
+def _process_files(
+    paths: List[str],
+    tpl_med_cols: List[str],
+    tpl_enf_cols: List[str],
+    pac_lookup,
+    per_lookup,
+    report: List[str],
+    group_name: str,
+    sort_output: bool,
+    route_by_category: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Procesa un conjunto de archivos (sean MED o ENF seleccionados por el usuario),
+    pero rutea filas al output correcto usando CATEGORIA DEL PERSONAL DE SALUD.
+    Esto evita mezclas y corrige cuando un archivo viene "mixto".
+    """
+    med_parts = []
+    enf_parts = []
+
+    super_cols = list(dict.fromkeys(tpl_med_cols + tpl_enf_cols))  # unión, preserva orden
 
     for path in paths:
         try:
@@ -387,7 +693,6 @@ def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_l
             report.append(f"[{group_name}] [ERR] {os.path.basename(path)} | No se pudo abrir: {type(e).__name__}")
             continue
 
-        # elegir SOLO hojas con header estricta (TURNO+CODIGO) si existen
         strict_sheets: List[Tuple[str, int]] = []
         fallback_sheets: List[Tuple[str, int]] = []
 
@@ -403,12 +708,12 @@ def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_l
 
         chosen = strict_sheets if strict_sheets else fallback_sheets
 
-        # si hay strict, NO procesar las fallback (evita hojas resumen tipo "ENERO" que rompen PROC ENF)
         if strict_sheets:
-            for sh, fr in fallback_sheets:
+            for sh, _fr in fallback_sheets:
                 report.append(f"[{group_name}] [SKIP] {os.path.basename(path)} :: {sh} | Hoja resumen/no-plantilla (hay otra hoja con TURNO+CODIGO en el mismo archivo)")
 
         seen_fp = set()
+
         for sh, hr in chosen:
             try:
                 df = pd.read_excel(path, sheet_name=sh, header=hr)
@@ -416,77 +721,118 @@ def _process_group(paths: List[str], template_cols: List[str], pac_lookup, per_l
                 report.append(f"[{group_name}] [ERR] {os.path.basename(path)} :: {sh} | ReadError {type(e).__name__}")
                 continue
 
-            # Mapear columnas al esquema de la plantilla (reduce vacíos)
-            mapping = map_columns_to_template(list(df.columns), template_cols)
+            in_rows = len(df)
+
+            # mapear a super esquema (reduce vacíos)
+            mapping = map_columns_to_template(list(df.columns), super_cols)
             if mapping:
                 df = df.rename(columns=mapping)
 
-            in_rows = len(df)
             df = drop_garbage_rows(df)
 
-            # estandarizaciones clave
+            # fechas/turno
             if "Unnamed: 0" in df.columns:
-                df["Unnamed: 0"] = standardize_date(df["Unnamed: 0"])
+                df["Unnamed: 0"] = standardize_date_contextual(df["Unnamed: 0"], report, f"{os.path.basename(path)} :: {sh}")
             if "TURNO" in df.columns:
                 df["TURNO"] = enforce_turno(df["TURNO"])
 
+            # unidad y forward-fill por celdas fusionadas
+            df = fill_unidad_origen_from_unnamed(df, super_cols)
+            df = forward_fill_blocks(df, [
+                "Unnamed: 0", "TURNO", "CODIGO", "CATEGORIA DEL PERSONAL DE SALUD",
+                "UNIDAD DE ORIGEN", "Unnamed: 9"
+            ])
+
+            # limpiar códigos
+            if "PROCEDIMIENTO   (CPT)" in df.columns:
+                df["PROCEDIMIENTO   (CPT)"] = clean_cpt(df["PROCEDIMIENTO   (CPT)"])
+            if "DIAGNOSTICO 1 (CIE 10)" in df.columns:
+                df["DIAGNOSTICO 1 (CIE 10)"] = clean_cie10(df["DIAGNOSTICO 1 (CIE 10)"])
+
             df = enrich_with_dbs(df, pac_lookup, per_lookup)
-            df = fix_procedure_pairs(df, template_cols)
 
-            # alinear a plantilla (conserva columnas exactas)
-            df = df.reindex(columns=template_cols)
-
-            # fingerprint para duplicados dentro del mismo archivo (ej. Hoja1 y "1-31 ENERO 2026")
-            key_cols = [c for c in ["Unnamed: 0","TURNO","CODIGO","DNI DEL PACIENTE","PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in df.columns]
-            fp = quick_fingerprint(df.dropna(how="all"), key_cols)
+            # fingerprint para evitar duplicados dentro de un mismo archivo
+            fp_cols = [c for c in ["Unnamed: 0","TURNO","CODIGO","DNI DEL PACIENTE","PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in df.columns]
+            fp = quick_fingerprint(df.dropna(how="all"), fp_cols)
             if fp in seen_fp:
-                report.append(f"[{group_name}] [SKIP] {os.path.basename(path)} :: {sh} | Duplicado (misma data en otra hoja del archivo) | in={in_rows} out={len(df)}")
+                report.append(f"[{group_name}] [SKIP] {os.path.basename(path)} :: {sh} | Duplicado (misma data en otra hoja) | in={in_rows} out={len(df)}")
                 continue
             seen_fp.add(fp)
 
-            report.append(f"[{group_name}] [OK] {os.path.basename(path)} :: {sh} | in={in_rows} out={len(df)}")
-            parts.append(df)
+            # Distribución de categorías (solo para QA)
+            cat_col = "CATEGORIA DEL PERSONAL DE SALUD"
+            cat = pd.to_numeric(df[cat_col], errors="coerce") if cat_col in df.columns else pd.Series([np.nan]*len(df), index=df.index)
+            cnt_med = int(cat.isin([1,2,3,4]).sum())
+            cnt_enf = int(cat.isin([5,6,7]).sum())
+            cnt_unk = int((~cat.isin([1,2,3,4,5,6,7]) | cat.isna()).sum())
+
+            if route_by_category:
+                # ruteo real por categoria (modo anterior)
+                med, enf, unk = split_by_categoria(df)
+                if len(unk):
+                    if group_name == "MED_FILES":
+                        med = pd.concat([med, unk], ignore_index=True)
+                    else:
+                        enf = pd.concat([enf, unk], ignore_index=True)
+                    report.append(f"[{group_name}] [WARN] {os.path.basename(path)} :: {sh} | unk_categoria={len(unk)} (ruteado por grupo)")
+
+                if len(med):
+                    med2 = fix_procedure_pairs(med, tpl_med_cols).reindex(columns=tpl_med_cols)
+                    med2 = _drop_obvious_empty_records(med2)
+                    med_parts.append(med2)
+
+                if len(enf):
+                    enf2 = fix_procedure_pairs(enf, tpl_enf_cols).reindex(columns=tpl_enf_cols)
+                    enf2 = _drop_obvious_empty_records(enf2)
+                    enf_parts.append(enf2)
+
+                report.append(f"[{group_name}] [OK] {os.path.basename(path)} :: {sh} | in={in_rows} med={len(med)} enf={len(enf)} | cats_med={cnt_med} cats_enf={cnt_enf} cats_unk={cnt_unk}")
+
+            else:
+                # Modo solicitado: RESPETAR el grupo de carga del usuario
+                target_cols = tpl_med_cols if group_name == "MED_FILES" else tpl_enf_cols
+                out = fix_procedure_pairs(df, target_cols).reindex(columns=target_cols)
+                out = _drop_obvious_empty_records(out)
+
+                # Warn si el archivo parece del otro grupo
+                if group_name == "MED_FILES" and cnt_enf > max(30, int(0.25*len(df))):
+                    report.append(f"[{group_name}] [WARN] {os.path.basename(path)} :: {sh} | Muchas filas con categoria ENF (5-7) dentro de archivos MED: {cnt_enf}/{len(df)}")
+                if group_name == "ENF_FILES" and cnt_med > max(30, int(0.25*len(df))):
+                    report.append(f"[{group_name}] [WARN] {os.path.basename(path)} :: {sh} | Muchas filas con categoria MED (1-4) dentro de archivos ENF: {cnt_med}/{len(df)}")
+
+                if group_name == "MED_FILES":
+                    med_parts.append(out)
+                else:
+                    enf_parts.append(out)
+
+                report.append(f"[{group_name}] [OK] {os.path.basename(path)} :: {sh} | in={in_rows} out={len(out)} | cats_med={cnt_med} cats_enf={cnt_enf} cats_unk={cnt_unk}")
 
         wb.close()
 
-    if not parts:
-        return pd.DataFrame(columns=template_cols)
+    med_df = pd.concat(med_parts, ignore_index=True) if med_parts else pd.DataFrame(columns=tpl_med_cols)
+    enf_df = pd.concat(enf_parts, ignore_index=True) if enf_parts else pd.DataFrame(columns=tpl_enf_cols)
 
-    out = pd.concat(parts, ignore_index=True)
-    out = _decat_df(out)
+    # dedup cross-files
+    for df, cols in ((med_df, tpl_med_cols), (enf_df, tpl_enf_cols)):
+        pass
 
-    # quitar duplicados entre archivos por una clave razonable (sin perder información útil)
-    dedup_cols = [c for c in ["Unnamed: 0","TURNO","CODIGO","DNI DEL PACIENTE","PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in out.columns]
-    if dedup_cols:
-        out = out.drop_duplicates(subset=dedup_cols, keep="first")
+    # ordenar (seguro) si se desea
+    if sort_output:
+        def _sort(df: pd.DataFrame) -> pd.DataFrame:
+            if len(df) == 0 or "Unnamed: 0" not in df.columns:
+                return df
+            dtp = _robust_datetime_from_any(df["Unnamed: 0"])
+            df = df.copy()
+            df["_d"] = dtp
+            df["_t"] = df["TURNO"].map({"M": 0, "T": 1, "N": 2}) if "TURNO" in df.columns else np.nan
+            df["_c"] = pd.to_numeric(df["CODIGO"], errors="coerce") if "CODIGO" in df.columns else np.nan
+            df = _decat_df(df)
+            df = df.sort_values(by=["_d","_t","_c"], na_position="last", kind="mergesort")
+            return df.drop(columns=["_d","_t","_c"])
+        med_df = _sort(med_df)
+        enf_df = _sort(enf_df)
 
-    # ordenar (para que no salga “mezclado”)
-    if sort_output and "Unnamed: 0" in out.columns:
-        dtp = _robust_datetime_from_any(out["Unnamed: 0"])
-        out["_sort_date"] = dtp
-
-        if "TURNO" in out.columns:
-            out["_sort_turno"] = out["TURNO"].map({"M": 0, "T": 1})
-        else:
-            out["_sort_turno"] = np.nan
-
-        if "CODIGO" in out.columns:
-            out["_sort_codigo"] = pd.to_numeric(out["CODIGO"], errors="coerce")
-        else:
-            out["_sort_codigo"] = np.nan
-
-        # Orden estable
-        out = out.sort_values(
-            by=["_sort_date", "_sort_turno", "_sort_codigo"],
-            ascending=[True, True, True],
-            na_position="last",
-            kind="mergesort",
-        )
-        out = out.drop(columns=["_sort_date", "_sort_turno", "_sort_codigo"])
-
-    return out
-
-
+    return med_df, enf_df
 # ============================================================
 # API principal
 # ============================================================
@@ -501,6 +847,7 @@ def consolidate(
     include_audit_sheet: bool = False,
     write_report_txt: bool = True,
     sort_output: bool = True,
+    route_by_category: bool = False,
 ):
     """
     - PROC. MED. se llena SOLO con proc_med_files
@@ -516,12 +863,31 @@ def consolidate(
     pac_lookup, per_lookup = load_databases(pacientes_xlsx, personal_xlsx)
 
     report: List[str] = []
-    report.append("=== CONSOLIDADOR HOSPITAL - REPORTE (v4) ===")
+    report.append("=== CONSOLIDADOR HOSPITAL - REPORTE (v4.6.1) ===")
 
-    med_df = _process_group(proc_med_files or [], tpl_med_cols, pac_lookup, per_lookup, report, "MED", sort_output)
-    enf_df = _process_group(proc_enf_files or [], tpl_enf_cols, pac_lookup, per_lookup, report, "ENF", sort_output)
+    med_a, enf_a = _process_files(proc_med_files or [], tpl_med_cols, tpl_enf_cols, pac_lookup, per_lookup, report, "MED_FILES", sort_output, route_by_category)
+    med_b, enf_b = _process_files(proc_enf_files or [], tpl_med_cols, tpl_enf_cols, pac_lookup, per_lookup, report, "ENF_FILES", sort_output, route_by_category)
+
+    # combinar (ya ruteado por categoria)
+    med_df = pd.concat([med_a, med_b], ignore_index=True) if len(med_b) else med_a
+    enf_df = pd.concat([enf_a, enf_b], ignore_index=True) if len(enf_b) else enf_a
 
     report.append("")
+    def _date_outlier_summary(df: pd.DataFrame, label: str):
+        if "Unnamed: 0" not in df.columns or len(df)==0:
+            return
+        dt = pd.to_datetime(df["Unnamed: 0"], errors="coerce", dayfirst=True)
+        dt = dt.dropna()
+        if len(dt) < 50:
+            return
+        med = dt.median()
+        out = dt[dt > med + pd.Timedelta(days=120)]
+        if len(out):
+            vc = out.dt.to_period("M").astype(str).value_counts().head(6)
+            report.append(f"[OUTLIERS] {label} | future>120d={len(out)} | top_months=" + ", ".join([f"{k}:{int(v)}" for k,v in vc.items()]))
+
+    _date_outlier_summary(med_df, "PROC.MED")
+    _date_outlier_summary(enf_df, "PROC.ENF")
     report.append(f"PROC. MED. filas: {len(med_df)}")
     report.append(f"PROC. ENF. filas: {len(enf_df)}")
 
@@ -554,3 +920,4 @@ def consolidate(
         report_path = base + "_REPORTE.txt"
         with open(report_path, "w", encoding="utf-8") as f:
             f.write("\n".join(map(str, report)))
+

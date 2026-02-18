@@ -60,6 +60,10 @@ class App(QWidget):
         self.chk_sort.setChecked(True)
         layout.addWidget(self.chk_sort)
 
+        self.chk_route = QCheckBox("Separar automáticamente por CATEGORIA (1-4 MED / 5-7 ENF) (opcional)")
+        self.chk_route.setChecked(False)
+        layout.addWidget(self.chk_route)
+
         btn_run = QPushButton("PROCESAR")
         btn_run.clicked.connect(self.run)
         layout.addWidget(btn_run)
@@ -121,6 +125,7 @@ class App(QWidget):
                 include_audit_sheet=self.chk_audit.isChecked(),
                 write_report_txt=self.chk_report.isChecked(),
                 sort_output=self.chk_sort.isChecked(),
+                route_by_category=self.chk_route.isChecked(),
             )
             extra = ""
             if self.chk_report.isChecked():
