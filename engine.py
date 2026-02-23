@@ -2,6 +2,7 @@ import os
 import re
 import unicodedata
 import hashlib
+import datetime
 from difflib import SequenceMatcher
 from typing import List, Tuple, Optional
 
@@ -230,6 +231,222 @@ def enforce_turno(series: pd.Series) -> pd.Series:
     return s
 
 
+def normalize_codigo_value(v) -> str:
+    """CODIGO como string numérico; recorta ceros a la izquierda; si >5 dígitos toma los últimos 5."""
+    if v is None or (isinstance(v, float) and (np.isnan(v) or not np.isfinite(v))):
+        return ""
+    # si es número
+    try:
+        if isinstance(v, (int, np.integer)):
+            return str(int(v))
+        if isinstance(v, (float, np.floating)):
+            if abs(float(v) - round(float(v))) < 1e-6:
+                return str(int(round(float(v))))
+            # raro: codigo con decimales -> extraer dígitos
+    except Exception:
+        pass
+
+    s = str(v).strip()
+    if s == "" or s.upper() in {"NAN","NONE"}:
+        return ""
+    # extraer dígitos
+    digs = re.findall(r"\d+", s)
+    if not digs:
+        return s.strip().upper()  # lo reportaremos si no es numérico
+    d = digs[0]
+    d = d.lstrip("0") or "0"
+    if len(d) > 5:
+        d = d[-5:]
+    return d
+
+
+def repair_sf_shift(df: pd.DataFrame, report: list[str], context: str) -> pd.DataFrame:
+    """
+    En el caso bueno (DIC 2025), valores tipo SF113 (o similares) van en 'Unnamed: 1' (UBIGEO),
+    NO en CODIGO.
+
+    - Si CODIGO contiene un valor tipo SFxxxx -> se mueve a Unnamed: 1 si está vacío.
+    - Si Unnamed: 1 ya tiene algo, igual se limpia CODIGO (para que CODIGO quede numérico).
+    """
+    if "CODIGO" not in df.columns or "Unnamed: 1" not in df.columns:
+        return df
+
+    df = df.copy()
+    code = df["CODIGO"].astype("object")
+    u1 = df["Unnamed: 1"].astype("object")
+
+    code_s = code.astype(str).str.strip().str.upper()
+    u1_s = u1.astype(str).str.strip()
+
+    # ejemplos: SF113, SFI113, SFF113, etc.
+    is_sf = code_s.str.match(r"^(SF\d{2,4}|S[A-Z]{0,2}F?I?\d{2,4})$", na=False)
+
+    if not bool(is_sf.any()):
+        return df
+
+    empty_u1 = u1.isna() | (u1_s == "") | (u1_s.str.lower() == "nan")
+    move = is_sf & empty_u1
+    moved = int(move.sum())
+    if moved:
+        df.loc[move, "Unnamed: 1"] = code.loc[move]
+
+    cleared = int(is_sf.sum())
+    df.loc[is_sf, "CODIGO"] = np.nan
+
+    report.append(f"[SHIFT] {context} | sf_en_codigo={cleared} moved_a_Unnamed1={moved}")
+    return df
+
+
+
+def normalize_codigo_column(df: pd.DataFrame, report: list[str], context: str) -> pd.DataFrame:
+    """Normaliza CODIGO (00017024 -> 17024) y registra cambios."""
+    if "CODIGO" not in df.columns:
+        return df
+    before = df["CODIGO"].astype("object")
+    after = before.apply(normalize_codigo_value)
+    # marcar solo donde cambió y after es numérico
+    changed = (before.astype(str).str.strip() != after.astype(str).str.strip()) & (after != "")
+    n = int(changed.sum())
+    df = df.copy()
+    df["CODIGO"] = after.replace("", np.nan)
+    if n:
+        report.append(f"[CODIGO] {context} | normalizados={n}")
+    return df
+
+
+def fill_codigo_with_mode(df: pd.DataFrame, report: list[str], context: str) -> pd.DataFrame:
+    """
+    Si CODIGO viene con valores inválidos (ej: vacíos, 'SF113', '00017024', etc),
+    intenta rellenar SOLO los inválidos usando la moda de los códigos válidos de 5 dígitos
+    dentro del mismo dataframe.
+    """
+    if "CODIGO" not in df.columns:
+        return df
+
+    df = df.copy()
+    s = df["CODIGO"].astype("object").apply(normalize_codigo_value)
+    s = s.replace("", np.nan)
+
+    valid_mask = s.notna() & s.astype(str).str.match(r"^\d{5}$", na=False)
+    if not bool(valid_mask.any()):
+        df["CODIGO"] = s
+        return df
+
+    mode = s.loc[valid_mask].value_counts().idxmax()
+
+    invalid_mask = s.isna() | (~s.astype(str).str.match(r"^\d{5}$", na=False))
+    n = int(invalid_mask.sum())
+    if n:
+        s.loc[invalid_mask] = mode
+        report.append(f"[CODIGO] {context} | rellenados_con_moda={n} (m={mode})")
+
+    df["CODIGO"] = s
+    return df
+
+
+def _looks_like_cpt_str(s: str) -> bool:
+    s = (s or "").strip().upper()
+    if s == "" or s in {"NAN","NONE"}:
+        return False
+    s = s.replace(",", ".")
+    s = re.sub(r"\s+", "", s)
+    # letras+num(+dec)
+    if re.fullmatch(r"[A-Z]+\d+(\.\d{1,3})?", s):
+        return True
+    # num(+dec)
+    if re.fullmatch(r"\d{3,7}(\.\d{1,3})?", s):
+        return True
+    return False
+
+
+def _is_weak_numeric_code(s: str) -> bool:
+    """Códigos numéricos muy cortos (3 dígitos) suelen ser conteos (ej 160) cuando hay otros CPT."""
+    s = (s or "").strip().upper()
+    if re.fullmatch(r"\d{3}$", s):
+        return True
+    return False
+
+
+def pack_cpt_block(df: pd.DataFrame, report: list[str], context: str, *args, **kwargs) -> pd.DataFrame:
+    """
+    Empaqueta el bloque CPT:
+    - mueve el primer CPT real a 'PROCEDIMIENTO (CPT)'
+    - desplaza opcionales
+    - dedup dentro de la fila
+    - NO destruye decimales/letras
+    """
+    cpt_cols = [c for c in df.columns if isinstance(c, str) and "PROCEDIMIENTO" in c.upper() and "CPT" in c.upper()]
+    if not cpt_cols or "PROCEDIMIENTO   (CPT)" not in df.columns:
+        return df
+
+    df = df.copy()
+    # normalizar valores de todas las columnas CPT
+    for c in cpt_cols:
+        df[c] = df[c].astype("object").apply(normalize_cpt_value).replace("", np.nan)
+
+    packed_rows = 0
+    changed_main = 0
+
+    # iterar filas (vectorizar sería ideal, pero mantener simple y seguro)
+    for i in range(len(df)):
+        vals = []
+        for c in cpt_cols:
+            v = df.at[i, c]
+            if pd.isna(v):
+                continue
+            vals.append(str(v).strip().upper())
+        if not vals:
+            continue
+
+        # separar códigos y otros
+        codes = [v for v in vals if _looks_like_cpt_str(v)]
+        others = [v for v in vals if not _looks_like_cpt_str(v)]
+
+        if not codes:
+            continue
+
+        # si hay algún código "fuerte", descartar los weak (3 dígitos) de la lista de códigos
+        strong = [v for v in codes if not _is_weak_numeric_code(v)]
+        if strong:
+            weak = [v for v in codes if _is_weak_numeric_code(v)]
+            codes = strong
+            # los weak pasan a others para no perderlos
+            others = weak + others
+
+        # dedup preservando orden
+        def dedup(seq):
+            seen=set()
+            out=[]
+            for x in seq:
+                if x in seen:
+                    continue
+                seen.add(x)
+                out.append(x)
+            return out
+        codes = dedup(codes)
+        others = dedup(others)
+
+        # nuevo contenido para columnas CPT
+        new_vals = (codes + others)[:len(cpt_cols)]
+        # completar con NaN
+        new_vals += [np.nan]*(len(cpt_cols)-len(new_vals))
+
+        # detectar cambio en main CPT
+        old_main = df.at[i, "PROCEDIMIENTO   (CPT)"]
+        new_main = new_vals[cpt_cols.index("PROCEDIMIENTO   (CPT)")] if "PROCEDIMIENTO   (CPT)" in cpt_cols else new_vals[0]
+        if (pd.isna(old_main) and pd.notna(new_main)) or (pd.notna(old_main) and pd.notna(new_main) and str(old_main).strip().upper() != str(new_main).strip().upper()):
+            changed_main += 1
+
+        # aplicar
+        for c, v in zip(cpt_cols, new_vals):
+            df.at[i, c] = v
+        packed_rows += 1
+
+    if packed_rows:
+        report.append(f"[CPT] {context} | filas_revisadas={packed_rows} main_cambiado={changed_main}")
+    return df
+
+
 def split_by_categoria(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Separa registros por CATEGORIA DEL PERSONAL DE SALUD:
@@ -328,20 +545,89 @@ def map_columns_to_template(df_cols: List[str], template_cols: List[str], fuzzy_
 
 
 
+def _fmt_num_code(x: float) -> str:
+    """Formato estable para números tipo código: enteros sin .0; decimales a 2 dígitos."""
+    if x is None or (isinstance(x, float) and (math.isnan(x) or not math.isfinite(x))):
+        return ""
+    if abs(x - round(x)) < 1e-6:
+        return str(int(round(x)))
+    # 2 decimales, preserva .01 / .10
+    return f"{x:.2f}"
+
+
+def normalize_cpt_value(v) -> str:
+    """
+    Normaliza un valor de CPT sin destruir:
+    - conserva letras (C2062, D2392)
+    - conserva decimales (99199.11, 99206.01)
+    - corrige artefactos de float (.0, 99199.1100000001)
+    - unifica separador decimal ',' -> '.'
+    """
+    if v is None:
+        return ""
+    try:
+        import numpy as _np
+        if isinstance(v, (_np.floating, float)):
+            return _fmt_num_code(float(v))
+        if isinstance(v, (_np.integer, int)):
+            return str(int(v))
+    except Exception:
+        pass
+
+    s = str(v).strip().upper()
+    if s in {"", "NAN", "NONE"}:
+        return ""
+    s = s.replace(",", ".")
+    s = re.sub(r"\s+", "", s)
+
+    # quitar .0 exacto
+    s = re.sub(r"\.0$", "", s)
+
+    # Si es numérico puro con decimal:
+    m = re.fullmatch(r"(\d+)\.(\d+)", s)
+    if m:
+        a, b = m.group(1), m.group(2)
+        if len(b) == 1:
+            return f"{a}.{b}0"
+        if len(b) == 2:
+            return s
+        # demasiados decimales -> redondear a 2
+        try:
+            x = float(s)
+            return _fmt_num_code(x)
+        except Exception:
+            return f"{a}.{b[:2]}"
+
+    # Letra + num (+ decimal)
+    m = re.fullmatch(r"([A-Z]+)(\d+)\.(\d+)", s)
+    if m:
+        pre, a, b = m.group(1), m.group(2), m.group(3)
+        if len(b) == 1:
+            return f"{pre}{a}.{b}0"
+        if len(b) >= 2:
+            return f"{pre}{a}.{b[:2]}"
+    # Letra+num sin decimal
+    m = re.fullmatch(r"([A-Z]+)(\d+)", s)
+    if m:
+        return f"{m.group(1)}{m.group(2)}"
+
+    # num puro
+    if re.fullmatch(r"\d+", s):
+        return s
+
+    # devolver tal cual (por si viniera un código raro); packing decidirá si usa o no
+    return s
+
+
 def clean_cpt(series: pd.Series) -> pd.Series:
     """
-    Limpia CPT:
-    - quita decimales (99199.11 -> 99199)
-    - deja solo dígitos
+    Limpieza NO destructiva de CPT.
+    Mantiene letras y decimales (como el caso bueno DIC 2025).
     """
     s = series.astype("object")
-    s2 = s.astype(str).str.strip()
-    s2 = s2.str.replace(r"\.0$", "", regex=True)
-    s2 = s2.str.replace(",", ".", regex=False)
-    s2 = s2.str.extract(r"(\d+)", expand=False)
-    # algunos vienen con más de 5 dígitos, no recortamos agresivo; solo quita basura
-    s2 = s2.where(s2.notna() & (s2.str.len() >= 3), np.nan)
-    return s2
+    out = s.apply(normalize_cpt_value)
+    out = out.replace("", np.nan)
+    return out
 
 
 def clean_cie10(series: pd.Series) -> pd.Series:
@@ -415,8 +701,10 @@ def fill_unidad_origen_from_unnamed(df: pd.DataFrame, template_cols: List[str]) 
         df[target] = df[target].astype("object")
 
     non_null_ratio = df[target].notna().mean() if len(df) else 0.0
-    if non_null_ratio > 0.15:
-        return df  # ya tiene suficiente
+    # Antes se retornaba si tenía >15% lleno, pero eso deja muchos huecos.
+    # Solo retornamos si ya está prácticamente completo.
+    if non_null_ratio > 0.97:
+        return df
 
     keywords = ["EMERGENCIA","CONSULTA","CENTRO","QUIRURG","HOSPITAL","DPTO","SERVICIO","TRIAJE","HEMODIAL","ESTOMAT","UCI","URGEN"]
     best_col, best_score = None, 0.0
@@ -450,19 +738,103 @@ def fill_unidad_origen_from_unnamed(df: pd.DataFrame, template_cols: List[str]) 
     return df
 
 
-def forward_fill_blocks(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+def apply_column_aliases(df: pd.DataFrame, report: list[str], context: str) -> pd.DataFrame:
     """
-    Muchos excels vienen con celdas fusionadas: el primer registro tiene FECHA/CODIGO/TURNO y
-    el resto de filas del bloque vienen en blanco. Esto rellena hacia abajo solo en columnas clave.
+    Algunos excels no usan exactamente los mismos encabezados:
+    - FECHA / FECHA DE ATENCION -> 'Unnamed: 0'
+    - UBIGEO -> 'Unnamed: 1'
+    - DNI PERSONAL / DNI TRATANTE -> 'Unnamed: 9'
+
+    Esto reduce pérdidas de datos cuando el header no coincide con la plantilla.
     """
     df = df.copy()
-    for c in cols:
-        if c in df.columns:
-            # asegurar dtype flexible para que ffill no choque (ej. todo NaN -> float64)
-            df[c] = df[c].astype("object")
-            s = df[c].replace("", np.nan)
-            df[c] = s.ffill()
+    cols = list(df.columns)
+    # --- Si el encabezado de la primera columna es una fecha (a veces ponen la FECHA en el header)
+    #     renombrarla a Unnamed: 0 para que el resto del pipeline (ffill/fechas) funcione.
+    if "Unnamed: 0" not in df.columns and len(df.columns) > 0:
+        c0 = df.columns[0]
+        if isinstance(c0, (datetime.datetime, datetime.date, pd.Timestamp)):
+            df = df.rename(columns={c0: "Unnamed: 0"})
+            report.append(f"[ALIAS] {context} | header_fecha -> Unnamed: 0")
+    # --- Si existe una columna con nombre-fecha y Unnamed:0 no existe, intentar usar la primera fecha
+    if "Unnamed: 0" not in df.columns:
+        for c in df.columns:
+            if isinstance(c, (datetime.datetime, datetime.date, pd.Timestamp)):
+                df = df.rename(columns={c: "Unnamed: 0"})
+                report.append(f"[ALIAS] {context} | header_fecha({c}) -> Unnamed: 0")
+                break
+    norm_map = {c: _norm_txt(c) for c in cols}
+
+    def find_by_all_tokens(tokens: list[str]) -> Optional[str]:
+        for c, n in norm_map.items():
+            if all(t in n for t in tokens):
+                return c
+        return None
+
+    # ---- FECHA -> Unnamed: 0
+    if "Unnamed: 0" not in df.columns:
+        c = find_by_all_tokens(["FECHA"])
+        if c is not None:
+            df = df.rename(columns={c: "Unnamed: 0"})
+            report.append(f"[ALIAS] {context} | {c} -> Unnamed: 0")
+    else:
+        # si Unnamed:0 está muy vacío y existe FECHA, rellenar vacíos
+        c = find_by_all_tokens(["FECHA"])
+        if c is not None and c != "Unnamed: 0":
+            missing = df["Unnamed: 0"].isna()
+            if float(missing.mean()) > 0.25:
+                df.loc[missing, "Unnamed: 0"] = df.loc[missing, c]
+                report.append(f"[ALIAS] {context} | rellenado Unnamed:0 desde {c} (faltantes={int(missing.sum())})")
+
+    # ---- UBIGEO -> Unnamed: 1
+    if "Unnamed: 1" not in df.columns:
+        c = find_by_all_tokens(["UBIGEO"])
+        if c is not None:
+            df = df.rename(columns={c: "Unnamed: 1"})
+            report.append(f"[ALIAS] {context} | {c} -> Unnamed: 1")
+
+    # ---- DNI PERSONAL -> Unnamed: 9
+    if "Unnamed: 9" not in df.columns:
+        c = find_by_all_tokens(["DNI", "PERSONAL"]) or find_by_all_tokens(["DNI", "TRATANTE"])
+        if c is not None:
+            df = df.rename(columns={c: "Unnamed: 9"})
+            report.append(f"[ALIAS] {context} | {c} -> Unnamed: 9")
+
+    # ---- UPSS (o similar) -> UNIDAD DE ORIGEN
+    if "UNIDAD DE ORIGEN" not in df.columns:
+        c = find_by_all_tokens(["UPSS"]) or find_by_all_tokens(["UNIDAD","ORIGEN"]) or find_by_all_tokens(["SERVICIO"]) 
+        if c is not None:
+            df = df.rename(columns={c: "UNIDAD DE ORIGEN"})
+            report.append(f"[ALIAS] {context} | {c} -> UNIDAD DE ORIGEN")
+
     return df
+
+
+def forward_fill_blocks(df: pd.DataFrame, cols) -> pd.DataFrame:
+    """
+    Muchos excels vienen con celdas fusionadas: el primer registro tiene FECHA/CODIGO/TURNO y
+    el resto de filas del bloque vienen en blanco.
+
+    - Soporta items tipo "COL" o tuplas/listas de alternativas: ("Unnamed: 0", "FECHA")
+    - Trata blancos/espacios como NaN para que el ffill funcione.
+    """
+    df = df.copy()
+
+    for item in cols:
+        if isinstance(item, (tuple, list)):
+            cand = [c for c in item if c in df.columns]
+        else:
+            cand = [item] if item in df.columns else []
+
+        for c in cand:
+            s = df[c].astype("object")
+            # blancos -> NaN
+            s = s.replace(r"^\s*$", np.nan, regex=True)
+            s = s.replace({"nan": np.nan, "NAN": np.nan, "None": np.nan, "NONE": np.nan})
+            df[c] = s.ffill()
+
+    return df
+
 
 
 
@@ -544,6 +916,28 @@ def enrich_with_dbs(df: pd.DataFrame, pac_lookup, per_lookup) -> pd.DataFrame:
         miss = df["Sexo"].isna() | (df["Sexo"].astype(str).str.strip() == "")
         df.loc[miss, "Sexo"] = df.loc[miss, "DNI DEL PACIENTE"].map(
             lambda d: pac_lookup.get(d, {}).get("Sexo") if pd.notna(d) else np.nan
+        )
+
+    # Completar campos adicionales del paciente si existen en la plantilla
+    if "Grupo" in df.columns and "DNI DEL PACIENTE" in df.columns:
+        df["Grupo"] = df["Grupo"].astype("object")
+        miss = df["Grupo"].isna() | (df["Grupo"].astype(str).str.strip() == "")
+        df.loc[miss, "Grupo"] = df.loc[miss, "DNI DEL PACIENTE"].map(
+            lambda d: pac_lookup.get(d, {}).get("Categoria") if pd.notna(d) else np.nan
+        )
+
+    if "Situación" in df.columns and "DNI DEL PACIENTE" in df.columns:
+        df["Situación"] = df["Situación"].astype("object")
+        miss = df["Situación"].isna() | (df["Situación"].astype(str).str.strip() == "")
+        df.loc[miss, "Situación"] = df.loc[miss, "DNI DEL PACIENTE"].map(
+            lambda d: pac_lookup.get(d, {}).get("estado") if pd.notna(d) else np.nan
+        )
+
+    if "Condición" in df.columns and "DNI DEL PACIENTE" in df.columns:
+        df["Condición"] = df["Condición"].astype("object")
+        miss = df["Condición"].isna() | (df["Condición"].astype(str).str.strip() == "")
+        df.loc[miss, "Condición"] = df.loc[miss, "DNI DEL PACIENTE"].map(
+            lambda d: pac_lookup.get(d, {}).get("Esta_Ate") if pd.notna(d) else np.nan
         )
 
     # Personal: si existe DNI del personal en la columna Unnamed:9, corrige nombre/especialidad
@@ -645,23 +1039,33 @@ def _write_df(ws, df: pd.DataFrame, start_row=3):
 def _drop_obvious_empty_records(df: pd.DataFrame) -> pd.DataFrame:
     """
     Filtro NO agresivo: elimina solo filas totalmente vacías/obvias.
-    Evita perder registros cuando CPT/DIAG vienen en columnas alternativas.
+    Importante: considera CPT en columnas opcionales (PROC. ENF suele ponerlo ahí).
     """
     df = df.copy()
-    keys = [c for c in ["Unnamed: 0","TURNO","CODIGO","DNI DEL PACIENTE","PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in df.columns]
-    if not keys:
-        return df
-    all_empty = df[keys].isna().all(axis=1)
-    df = df.loc[~all_empty].copy()
 
-    # además: si TURNO es NaN y no hay identificadores ni procedimientos, es basura
-    id_cols = [c for c in ["CODIGO","DNI DEL PACIENTE"] if c in df.columns]
-    clin_cols = [c for c in ["PROCEDIMIENTO   (CPT)","DIAGNOSTICO 1 (CIE 10)"] if c in df.columns]
-    if "TURNO" in df.columns and id_cols and clin_cols:
-        bad = df["TURNO"].isna() & df[id_cols].isna().all(axis=1) & df[clin_cols].isna().all(axis=1)
-        df = df.loc[~bad].copy()
+    # columnas clínicas dinámicas
+    cpt_cols = [c for c in df.columns if isinstance(c, str) and ("PROCEDIMIENTO" in c.upper()) and ("CPT" in c.upper())]
+    diag_cols = [c for c in df.columns if isinstance(c, str) and ("DIAGNOSTICO" in c.upper())]
+    id_cols  = [c for c in ["CODIGO","DNI DEL PACIENTE","DNI DEL TITULAR"] if c in df.columns]
+
+    # keys mínimas para descartar filas vacías
+    keys = [c for c in ["Unnamed: 0","TURNO","CODIGO"] if c in df.columns] + id_cols + cpt_cols[:3] + diag_cols[:2]
+    keys = [c for c in keys if c in df.columns]
+    if keys:
+        all_empty = df[keys].isna().all(axis=1)
+        df = df.loc[~all_empty].copy()
+
+    # descartar "basura" cuando no hay turno ni ids ni clínicos
+    if "TURNO" in df.columns:
+        clin_cols = (cpt_cols + diag_cols)
+        if id_cols and clin_cols:
+            bad = df["TURNO"].isna() & df[id_cols].isna().all(axis=1) & df[clin_cols].isna().all(axis=1)
+            df = df.loc[~bad].copy()
 
     return df
+
+
+
 
 
 
@@ -728,6 +1132,8 @@ def _process_files(
             if mapping:
                 df = df.rename(columns=mapping)
 
+            context = f"{os.path.basename(path)} :: {sh}"
+            df = apply_column_aliases(df, report, context)
             df = drop_garbage_rows(df)
 
             # fechas/turno
@@ -739,15 +1145,32 @@ def _process_files(
             # unidad y forward-fill por celdas fusionadas
             df = fill_unidad_origen_from_unnamed(df, super_cols)
             df = forward_fill_blocks(df, [
-                "Unnamed: 0", "TURNO", "CODIGO", "CATEGORIA DEL PERSONAL DE SALUD",
-                "UNIDAD DE ORIGEN", "Unnamed: 9"
+                ("Unnamed: 0", "FECHA"),
+                "TURNO",
+                "CODIGO",
+                "CATEGORIA DEL PERSONAL DE SALUD",
+                "UNIDAD DE ORIGEN",
+                ("Unnamed: 9",),
             ])
 
+            # Reparar desplazamientos tipo SF113 (columna errónea) y normalizar CODIGO
+            df = repair_sf_shift(df, report, f"{os.path.basename(path)} :: {sh}")
+            df = normalize_codigo_column(df, report, f"{os.path.basename(path)} :: {sh}")
+
+            # Limpiar CPT (no destructivo) para TODAS las columnas CPT existentes
+            for _c in [c for c in df.columns if isinstance(c, str) and "PROCEDIMIENTO" in c.upper() and "CPT" in c.upper()]:
+                df[_c] = clean_cpt(df[_c])
+
             # limpiar códigos
-            if "PROCEDIMIENTO   (CPT)" in df.columns:
-                df["PROCEDIMIENTO   (CPT)"] = clean_cpt(df["PROCEDIMIENTO   (CPT)"])
             if "DIAGNOSTICO 1 (CIE 10)" in df.columns:
                 df["DIAGNOSTICO 1 (CIE 10)"] = clean_cie10(df["DIAGNOSTICO 1 (CIE 10)"])
+
+            # ensure columns for db fill (si no vienen en el excel, igual se pueden completar con las BD)
+            for _c in ("Edad","Sexo","Grupo","Situación","Condición",
+                       "NOMBRE DEL MEDICO / PERSONAL DE SALUD TRATANTE",
+                       "ESPECIALIDAD DE MEDICO TRATANTE"):
+                if _c in super_cols and _c not in df.columns:
+                    df[_c] = np.nan
 
             df = enrich_with_dbs(df, pac_lookup, per_lookup)
 
@@ -779,11 +1202,13 @@ def _process_files(
                 if len(med):
                     med2 = fix_procedure_pairs(med, tpl_med_cols).reindex(columns=tpl_med_cols)
                     med2 = _drop_obvious_empty_records(med2)
+                    med2 = pack_cpt_block(med2, report, f"{os.path.basename(path)} :: {sh} :: PROC.MED")
                     med_parts.append(med2)
 
                 if len(enf):
                     enf2 = fix_procedure_pairs(enf, tpl_enf_cols).reindex(columns=tpl_enf_cols)
                     enf2 = _drop_obvious_empty_records(enf2)
+                    enf2 = pack_cpt_block(enf2, report, f"{os.path.basename(path)} :: {sh} :: PROC.ENF")
                     enf_parts.append(enf2)
 
                 report.append(f"[{group_name}] [OK] {os.path.basename(path)} :: {sh} | in={in_rows} med={len(med)} enf={len(enf)} | cats_med={cnt_med} cats_enf={cnt_enf} cats_unk={cnt_unk}")
@@ -793,6 +1218,7 @@ def _process_files(
                 target_cols = tpl_med_cols if group_name == "MED_FILES" else tpl_enf_cols
                 out = fix_procedure_pairs(df, target_cols).reindex(columns=target_cols)
                 out = _drop_obvious_empty_records(out)
+                out = pack_cpt_block(out, report, f"{os.path.basename(path)} :: {sh} :: {('PROC.MED' if group_name=='MED_FILES' else 'PROC.ENF')}")
 
                 # Warn si el archivo parece del otro grupo
                 if group_name == "MED_FILES" and cnt_enf > max(30, int(0.25*len(df))):
@@ -863,7 +1289,7 @@ def consolidate(
     pac_lookup, per_lookup = load_databases(pacientes_xlsx, personal_xlsx)
 
     report: List[str] = []
-    report.append("=== CONSOLIDADOR HOSPITAL - REPORTE (v4.6.1) ===")
+    report.append("=== CONSOLIDADOR HOSPITAL - REPORTE (v4.8.3) ===")
 
     med_a, enf_a = _process_files(proc_med_files or [], tpl_med_cols, tpl_enf_cols, pac_lookup, per_lookup, report, "MED_FILES", sort_output, route_by_category)
     med_b, enf_b = _process_files(proc_enf_files or [], tpl_med_cols, tpl_enf_cols, pac_lookup, per_lookup, report, "ENF_FILES", sort_output, route_by_category)
@@ -891,7 +1317,59 @@ def consolidate(
     report.append(f"PROC. MED. filas: {len(med_df)}")
     report.append(f"PROC. ENF. filas: {len(enf_df)}")
 
-    # Escribir dentro de la plantilla para conservar TODO el formato
+    
+    def _final_cleanup(df: pd.DataFrame, label: str) -> pd.DataFrame:
+        df = df.copy()
+        context = f"FINAL {label}"
+
+        # aliases (por si entraron columnas FECHA/UBIGEO/etc)
+        df = apply_column_aliases(df, report, context)
+
+        # fecha
+        if "Unnamed: 0" in df.columns:
+            df["Unnamed: 0"] = standardize_date_contextual(df["Unnamed: 0"], report, context)
+
+        # turno
+        if "TURNO" in df.columns:
+            df["TURNO"] = enforce_turno(df["TURNO"])
+
+        # forward fill (celdas fusionadas)
+        df = forward_fill_blocks(df, [
+            ("Unnamed: 0", "FECHA"),
+            "TURNO",
+            "CODIGO",
+            "CATEGORIA DEL PERSONAL DE SALUD",
+            "UNIDAD DE ORIGEN",
+            ("Unnamed: 9",),
+        ])
+
+        # arreglos CODIGO/UBIGEO (SFxxx)
+        df = repair_sf_shift(df, report, context)
+        df = normalize_codigo_column(df, report, context)
+        df = fill_codigo_with_mode(df, report, context)
+
+        # CPT: normaliza + pack para evitar que quede vacío el principal
+        cpt_cols = [c for c in df.columns if isinstance(c, str) and ("CPT" in c.upper()) and ("PROCEDIMIENTO" in c.upper())]
+        if cpt_cols:
+            for c in cpt_cols:
+                df[c] = df[c].astype("object").apply(normalize_cpt_value).replace("", np.nan)
+            df = pack_cpt_block(df, cpt_cols, report, context)
+
+        # descarta filas que no parecen registros (sin DNI paciente + sin diagnóstico + sin CPT)
+        key_cols = [c for c in ["DNI DEL PACIENTE", "DIAGNOSTICO 1 (CIE 10)", "PROCEDIMIENTO   (CPT)"] if c in df.columns]
+        if key_cols:
+            empty_mask = df[key_cols].isna().all(axis=1)
+            if bool(empty_mask.any()):
+                n = int(empty_mask.sum())
+                df = df.loc[~empty_mask].copy()
+                report.append(f"[DROP] {context} | filas_sin_claves={n}")
+
+        return df
+
+    med_df = _final_cleanup(med_df, "PROC. MED.")
+    enf_df = _final_cleanup(enf_df, "PROC. ENF")
+
+# Escribir dentro de la plantilla para conservar TODO el formato
     wb = openpyxl.load_workbook(plantilla_xlsx, keep_links=False)
     ws_med = wb["PROC. MED."]
     ws_enf = wb["PROC. ENF"]

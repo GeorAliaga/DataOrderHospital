@@ -1,47 +1,132 @@
-=== CONSOLIDADOR HOSPITAL - REPORTE (v4.5) ===
+=== CONSOLIDADOR HOSPITAL - REPORTE (v4.8.3) ===
 [MED_FILES] [SKIP] 2 PROCED  01AL31 ENE26.xlsx :: 1-31 ENERO 2026 | Hoja resumen/no-plantilla (hay otra hoja con TURNO+CODIGO en el mismo archivo)
-[MED_FILES] [WARN] 2 PROCED  01AL31 ENE26.xlsx :: Hoja1 | unk_categoria=1472 (ruteado por grupo)
-[MED_FILES] [OK] 2 PROCED  01AL31 ENE26.xlsx :: Hoja1 | in=1472 med=1472 enf=0
-[MED_FILES] [WARN] C-1 CPMS ENERO 2026.xlsx :: TRIAJE (CONSOLIDADO) | unk_categoria=1 (ruteado por grupo)
-[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: TRIAJE (CONSOLIDADO) | in=4038 med=1 enf=4037
-[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: TRAUMA SHOCK | in=32 med=0 enf=32
-[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: TOPICO | in=514 med=0 enf=514
-[MED_FILES] [WARN] C-1 CPMS ENERO 2026.xlsx :: ROTONDA | unk_categoria=3 (ruteado por grupo)
-[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: ROTONDA | in=394 med=3 enf=391
-[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: INYECTABLE | in=703 med=0 enf=703
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: ALBARRACIN | in=38 med=0 enf=38
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: CÁCERES | in=20 med=0 enf=20
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: CAMASSI | in=10 med=0 enf=10
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: CARBAJAL | in=43 med=0 enf=43
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx ::  JUAREZ | in=27 med=0 enf=27
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: IBARRA  | in=15 med=0 enf=15
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: LAPA | in=23 med=0 enf=23
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: MENESES | in=20 med=0 enf=20
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: NAVEROS | in=21 med=0 enf=21
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PANDURO | in=17 med=0 enf=17
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PARRA | in=5 med=0 enf=5
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PARRAGA | in=42 med=0 enf=42
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PEREZ MORENO | in=31 med=0 enf=31
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: SIERRA | in=57 med=0 enf=57
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: SUAREZ | in=970 med=0 enf=44
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: TASSARA | in=36 med=0 enf=36
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: ZEA  | in=35 med=0 enf=35
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: BURGA | in=31 med=0 enf=31
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: ACERO (consolidado) | in=554 med=0 enf=554
-[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: Hoja1 | in=554 med=0 enf=554
+[CPT] 2 PROCED  01AL31 ENE26.xlsx :: Hoja1 :: PROC.MED | filas_revisadas=1472 main_cambiado=0
+[MED_FILES] [OK] 2 PROCED  01AL31 ENE26.xlsx :: Hoja1 | in=1472 out=1472 | cats_med=0 cats_enf=0 cats_unk=1472
+[CODIGO] C-1 CPMS ENERO 2026.xlsx :: TRIAJE (CONSOLIDADO) | normalizados=4038
+[CPT] C-1 CPMS ENERO 2026.xlsx :: TRIAJE (CONSOLIDADO) :: PROC.MED | filas_revisadas=4036 main_cambiado=0
+[MED_FILES] [WARN] C-1 CPMS ENERO 2026.xlsx :: TRIAJE (CONSOLIDADO) | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 4037/4038
+[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: TRIAJE (CONSOLIDADO) | in=4038 out=4038 | cats_med=0 cats_enf=4037 cats_unk=1
+[CPT] C-1 CPMS ENERO 2026.xlsx :: TRAUMA SHOCK :: PROC.MED | filas_revisadas=32 main_cambiado=0
+[MED_FILES] [WARN] C-1 CPMS ENERO 2026.xlsx :: TRAUMA SHOCK | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 32/32
+[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: TRAUMA SHOCK | in=32 out=32 | cats_med=0 cats_enf=32 cats_unk=0
+[ALIAS] C-1 CPMS ENERO 2026.xlsx :: TOPICO | FECHA -> Unnamed: 0
+[ALIAS] C-1 CPMS ENERO 2026.xlsx :: TOPICO | DNI PERSONAL -> Unnamed: 9
+[CODIGO] C-1 CPMS ENERO 2026.xlsx :: TOPICO | normalizados=514
+[CPT] C-1 CPMS ENERO 2026.xlsx :: TOPICO :: PROC.MED | filas_revisadas=514 main_cambiado=1
+[MED_FILES] [WARN] C-1 CPMS ENERO 2026.xlsx :: TOPICO | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 514/514
+[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: TOPICO | in=514 out=514 | cats_med=0 cats_enf=514 cats_unk=0
+[CODIGO] C-1 CPMS ENERO 2026.xlsx :: ROTONDA | normalizados=394
+[CPT] C-1 CPMS ENERO 2026.xlsx :: ROTONDA :: PROC.MED | filas_revisadas=394 main_cambiado=0
+[MED_FILES] [WARN] C-1 CPMS ENERO 2026.xlsx :: ROTONDA | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 391/394
+[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: ROTONDA | in=394 out=394 | cats_med=0 cats_enf=391 cats_unk=3
+[ALIAS] C-1 CPMS ENERO 2026.xlsx :: INYECTABLE | FECHA -> Unnamed: 0
+[CPT] C-1 CPMS ENERO 2026.xlsx :: INYECTABLE :: PROC.MED | filas_revisadas=703 main_cambiado=703
+[MED_FILES] [WARN] C-1 CPMS ENERO 2026.xlsx :: INYECTABLE | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 703/703
+[MED_FILES] [OK] C-1 CPMS ENERO 2026.xlsx :: INYECTABLE | in=703 out=703 | cats_med=0 cats_enf=703 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: ALBARRACIN | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: ALBARRACIN :: PROC.MED | filas_revisadas=37 main_cambiado=0
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: ALBARRACIN | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 38/38
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: ALBARRACIN | in=38 out=38 | cats_med=0 cats_enf=38 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: CÁCERES | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: CÁCERES :: PROC.MED | filas_revisadas=20 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: CÁCERES | in=20 out=20 | cats_med=0 cats_enf=20 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: CAMASSI | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: CAMASSI :: PROC.MED | filas_revisadas=10 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: CAMASSI | in=10 out=10 | cats_med=0 cats_enf=10 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: CARBAJAL | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: CARBAJAL :: PROC.MED | filas_revisadas=43 main_cambiado=0
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: CARBAJAL | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 43/43
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: CARBAJAL | in=43 out=43 | cats_med=0 cats_enf=43 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx ::  JUAREZ | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx ::  JUAREZ :: PROC.MED | filas_revisadas=27 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx ::  JUAREZ | in=27 out=27 | cats_med=0 cats_enf=27 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: IBARRA  | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: IBARRA  :: PROC.MED | filas_revisadas=15 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: IBARRA  | in=15 out=15 | cats_med=0 cats_enf=15 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: LAPA | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: LAPA :: PROC.MED | filas_revisadas=23 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: LAPA | in=23 out=23 | cats_med=0 cats_enf=23 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: MENESES | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: MENESES :: PROC.MED | filas_revisadas=20 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: MENESES | in=20 out=20 | cats_med=0 cats_enf=20 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: NAVEROS | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: NAVEROS :: PROC.MED | filas_revisadas=21 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: NAVEROS | in=21 out=21 | cats_med=0 cats_enf=21 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: PANDURO | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: PANDURO :: PROC.MED | filas_revisadas=17 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PANDURO | in=17 out=17 | cats_med=0 cats_enf=17 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: PARRA | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: PARRA :: PROC.MED | filas_revisadas=4 main_cambiado=0
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PARRA | in=5 out=5 | cats_med=0 cats_enf=5 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: PARRAGA | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: PARRAGA :: PROC.MED | filas_revisadas=42 main_cambiado=2
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: PARRAGA | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 42/42
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PARRAGA | in=42 out=42 | cats_med=0 cats_enf=42 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: PEREZ MORENO | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: PEREZ MORENO :: PROC.MED | filas_revisadas=31 main_cambiado=31
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: PEREZ MORENO | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 31/31
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: PEREZ MORENO | in=31 out=31 | cats_med=0 cats_enf=31 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: SIERRA | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: SIERRA :: PROC.MED | filas_revisadas=57 main_cambiado=0
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: SIERRA | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 57/57
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: SIERRA | in=57 out=57 | cats_med=0 cats_enf=57 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: SUAREZ | header_fecha -> Unnamed: 0
+[ALIAS] CPMS ENERO 2026.xlsx :: SUAREZ | UPSS -> UNIDAD DE ORIGEN
+[CODIGO] CPMS ENERO 2026.xlsx :: SUAREZ | normalizados=44
+[CPT] CPMS ENERO 2026.xlsx :: SUAREZ :: PROC.MED | filas_revisadas=44 main_cambiado=0
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: SUAREZ | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 44/44
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: SUAREZ | in=970 out=44 | cats_med=0 cats_enf=44 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: TASSARA | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: TASSARA :: PROC.MED | filas_revisadas=36 main_cambiado=0
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: TASSARA | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 36/36
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: TASSARA | in=36 out=36 | cats_med=0 cats_enf=36 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: ZEA  | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: ZEA  :: PROC.MED | filas_revisadas=35 main_cambiado=0
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: ZEA  | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 35/35
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: ZEA  | in=35 out=35 | cats_med=0 cats_enf=35 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: BURGA | UPSS -> UNIDAD DE ORIGEN
+[CPT] CPMS ENERO 2026.xlsx :: BURGA :: PROC.MED | filas_revisadas=31 main_cambiado=0
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: BURGA | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 31/31
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: BURGA | in=31 out=31 | cats_med=0 cats_enf=31 cats_unk=0
+[ALIAS] CPMS ENERO 2026.xlsx :: ACERO (consolidado) | UPSS -> UNIDAD DE ORIGEN
+[CODIGO] CPMS ENERO 2026.xlsx :: ACERO (consolidado) | normalizados=554
+[CPT] CPMS ENERO 2026.xlsx :: ACERO (consolidado) :: PROC.MED | filas_revisadas=553 main_cambiado=2
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: ACERO (consolidado) | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 554/554
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: ACERO (consolidado) | in=554 out=554 | cats_med=0 cats_enf=554 cats_unk=0
+[CPT] CPMS ENERO 2026.xlsx :: Hoja1 :: PROC.MED | filas_revisadas=553 main_cambiado=2
+[MED_FILES] [WARN] CPMS ENERO 2026.xlsx :: Hoja1 | Muchas filas con categoria ENF (5-7) dentro de archivos MED: 554/554
+[MED_FILES] [OK] CPMS ENERO 2026.xlsx :: Hoja1 | in=554 out=554 | cats_med=0 cats_enf=554 cats_unk=0
 [ENF_FILES] [SKIP] 1 ATENCIONES CENTRO QUIRURGICO - TRAMA H 2026.xlsx :: HOJA 1 | Hoja resumen/no-plantilla (hay otra hoja con TURNO+CODIGO en el mismo archivo)
-[ENF_FILES] [OK] 1 ATENCIONES CENTRO QUIRURGICO - TRAMA H 2026.xlsx :: Hoja1 | in=256 med=256 enf=0
+[CPT] 1 ATENCIONES CENTRO QUIRURGICO - TRAMA H 2026.xlsx :: Hoja1 :: PROC.ENF | filas_revisadas=245 main_cambiado=0
+[ENF_FILES] [WARN] 1 ATENCIONES CENTRO QUIRURGICO - TRAMA H 2026.xlsx :: Hoja1 | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 256/256
+[ENF_FILES] [OK] 1 ATENCIONES CENTRO QUIRURGICO - TRAMA H 2026.xlsx :: Hoja1 | in=256 out=256 | cats_med=256 cats_enf=0 cats_unk=0
 [ENF_FILES] [SKIP] PROCEDIMIENTO DE HEMODIALISIS -2025.xlsx :: ENERO | Hoja resumen/no-plantilla (hay otra hoja con TURNO+CODIGO en el mismo archivo)
-[ENF_FILES] [OK] PROCEDIMIENTO DE HEMODIALISIS -2025.xlsx :: Hoja1 | in=654 med=654 enf=0
+[CPT] PROCEDIMIENTO DE HEMODIALISIS -2025.xlsx :: Hoja1 :: PROC.ENF | filas_revisadas=654 main_cambiado=0
+[ENF_FILES] [WARN] PROCEDIMIENTO DE HEMODIALISIS -2025.xlsx :: Hoja1 | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 654/654
+[ENF_FILES] [OK] PROCEDIMIENTO DE HEMODIALISIS -2025.xlsx :: Hoja1 | in=654 out=654 | cats_med=654 cats_enf=0 cats_unk=0
 [ENF_FILES] [SKIP] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: ORTODONCIA | Hoja resumen/no-plantilla (hay otra hoja con TURNO+CODIGO en el mismo archivo)
-[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: RADIOLOGIA BUCAL | in=316 med=316 enf=0
-[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: PERIODONCIA | in=258 med=258 enf=0
-[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: REH ORAL | in=154 med=154 enf=0
-[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CBMF | in=225 med=225 enf=0
-[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CARIELOGIA Y ENDO | unk_categoria=2 (ruteado por grupo)
-[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CARIELOGIA Y ENDO | in=333 med=331 enf=2
-[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: ODONTOPEDIATRIA (CONSOLIDADO) | unk_categoria=2 (ruteado por grupo)
-[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: ODONTOPEDIATRIA (CONSOLIDADO) | in=1677 med=1675 enf=2
+[CPT] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: RADIOLOGIA BUCAL :: PROC.ENF | filas_revisadas=316 main_cambiado=0
+[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: RADIOLOGIA BUCAL | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 316/316
+[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: RADIOLOGIA BUCAL | in=316 out=316 | cats_med=316 cats_enf=0 cats_unk=0
+[CPT] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: PERIODONCIA :: PROC.ENF | filas_revisadas=258 main_cambiado=0
+[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: PERIODONCIA | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 258/258
+[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: PERIODONCIA | in=258 out=258 | cats_med=258 cats_enf=0 cats_unk=0
+[CPT] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: REH ORAL :: PROC.ENF | filas_revisadas=154 main_cambiado=0
+[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: REH ORAL | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 154/154
+[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: REH ORAL | in=154 out=154 | cats_med=154 cats_enf=0 cats_unk=0
+[CPT] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CBMF :: PROC.ENF | filas_revisadas=225 main_cambiado=0
+[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CBMF | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 225/225
+[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CBMF | in=225 out=225 | cats_med=225 cats_enf=0 cats_unk=0
+[CPT] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CARIELOGIA Y ENDO :: PROC.ENF | filas_revisadas=333 main_cambiado=0
+[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CARIELOGIA Y ENDO | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 331/333
+[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: CARIELOGIA Y ENDO | in=333 out=333 | cats_med=331 cats_enf=0 cats_unk=2
+[CPT] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: ODONTOPEDIATRIA (CONSOLIDADO) :: PROC.ENF | filas_revisadas=1677 main_cambiado=0
+[ENF_FILES] [WARN] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: ODONTOPEDIATRIA (CONSOLIDADO) | Muchas filas con categoria MED (1-4) dentro de archivos ENF: 1675/1677
+[ENF_FILES] [OK] PROCEDIMIENTOS DEL MES DE ENERO 2026 DE LOS OCHO SERVICIOS DEL DPTO DE ESTOMATOLOGIA.xlsx :: ODONTOPEDIATRIA (CONSOLIDADO) | in=1677 out=1677 | cats_med=1675 cats_enf=0 cats_unk=2
 
-PROC. MED. filas: 5343
-PROC. ENF. filas: 7226
+[OUTLIERS] PROC.MED | future>120d=14 | top_months=2026-06:6, 2026-08:6, 2026-11:2
+PROC. MED. filas: 8776
+PROC. ENF. filas: 3873
+[DATE] FINAL PROC. MED. | swaps_ambiguous=8 kept_ambiguous=3042 | dom=2026-01 median=2026-01-22
+[CODIGO] FINAL PROC. MED. | normalizados=1
+[CODIGO] FINAL PROC. MED. | rellenados_con_moda=516 (m=17024)
